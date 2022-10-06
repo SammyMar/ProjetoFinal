@@ -1,0 +1,286 @@
+---
+title: "Trabalho Final"
+author: "Samuel Martins de Medeiros"
+output: pdf_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introdução
+
+Com base nos assuntos estudados no dercorrer do curso, teremos como
+objetivo a aplicação de tais métodos. Tendo como objetivo principal a
+classificação dos municípios do banco de dados de incompletude do
+SIVEP-Gripe. Primeiramente iremos tratar de explicar em que consiste
+esse *DataSet*, alem da forma como as variáveis foram agrupadas e
+selecionadas. Seguindo para utilização de **PCA** para redução da
+dimensionalidade, onde logo em seguida será aplicado os métodos de
+agrupamentos tanto no conjunto reduzido quanto no sem alterações. Por
+fim detectação de outliers com base no método de comparação da
+aproximação feita pelo PCA com o banco original. É visado no final desse
+trabalho a possibilidade de tentar entender quais regiões brasileiras
+possuem maiores incompletudes e em quais variáveis, podendo futuramente
+comparar esses resultados à índices socio-econômicos.
+
+## Conjunto de Dados
+
+O Sistema de Informação da Vigilância Epidemiológica da Gripe
+(SIVEP-Gripe) foi implantado desde o ano de 2000 para monitoramento do
+vírus influenza no país, a partir de uma rede de vigilância sentinela da
+síndrome gripal (SG). Em 2009, com a pandemia pelo Vírus Influenza
+A(H1N1) pdm09 foi implantada a vigilância da Síndrome Respiratória Aguda
+Grave (SRAG) e, a partir disso, o Ministério da Saúde vem fortalecendo a
+vigilância dos vírus respiratórios. Dentro deste banco possuímos
+informações quanto a raça, sexo, etc. a respeito de cada um dos
+indivíduos. Dentro do Observatório Obstétrico Brasileiro (OOBr)
+trabalhamos com esse e outros conjuntos restringindo os dados aos de
+grávidas e puérperas, para realização de análises e inferências do grupo
+restrito. Na área de Qualidados dentro do projeto, é realizado pesquisa
+dentro desse e outros dois bancos (SINAC e SIM), afim de identificar
+três indicadores de incoerências, sendo eles:
+
+-   Incompletude: análise das informações que estão faltando na base de
+    dados, seja porque não foram preenchidas ("dados em branco") ou
+    porque a resposta era desconhecida ("dados ignorados").
+
+-   Implausibilidade: análise das informações que são improváveis e/ou
+    dificilmente possam ser consideradas aceitáveis dadas as
+    características de sua natureza.
+
+-   Inconsistência: informações que parecem ilógicas e/ou incompatíveis
+    a partir da análise da combinação dos dados informados em dois ou
+    mais campos do formulário.
+
+No âmbito desse trabalho é utilizado o conjunto dos dados para o
+indicador de incompletude, onde o valor para cada um dos municípios é
+equivalente a:
+
+$$
+      valor_{ij} = \frac{n\_Incompletude_{ij}}{n\_Observações_{ij}}
+$$
+
+Ou seja, o valor para a i-ésima variável do j-ésimo município será uma
+razão entre o número de incompletudes para a i-ésima variável do j-ésimo
+município pelo total de observações do mesmo. Isso para todas as
+variáveis aqui presentes. Uma pequena ressalva antes de realmentes
+darmos início, nosso conjunto de dados se restringe a um número finito
+de municípios, aqui não serão apresentados todos os presentes no Brasil.
+
+## PCA
+
+Podemos definir **PCA** como método para redução de dimensionalidade do
+conjunto de dados tomando como base os auto-valores e auto-vetores da
+matriz de covariâncias da matriz de covariância $\Sigma$ do vetor de
+dados multivariados **X**. de dados. O objetivo principal é simplificar
+a estrutura correlativa dos dados multivariados. Um outro objetivo é a
+não perda de informação com respeito à variância total dos dados
+originais ao fazer a redução. Uma definição mais formal seria:
+
+-   **Componentes Principais**: Seja $X_{d\times1}$ um vetor aleatório
+    com $\mu = E(X)$ e $\Sigma = Var(X)$ e
+    $(\lambda_i;e_i), i = 1,2,...,d$ os pares de auto-valores e
+    auto-vetores normalizados associados de $\Sigma$. Então, $Y = O'X$,
+    com $O = [e_1,e_2,...,e_d]$ os componentes principais de $X$. Onde
+    os $Y_i$'s são não correlacionados e combinações lineares de $X$, e
+    $Var(Y_1) = \lambda_1 > Var(Y_2) = \lambda_2 >...> Var(Y_d) = \lambda_d > 0$.
+
+Temos como objetivor reter esses $Y_i$'s de tal forma que dado $0<p<d$,
+$VarTotal(Y_{p\times1}) \approx VarTotal(X_{d\times1})$. Seguindo essa
+linha obtemos,
+
+```{r Importacao e Adaptacao dos dados, include=FALSE}
+  library(rjson)
+  library(tidyverse)
+  library(factoextra)
+  library(ISLR)
+  library(tidymodels)
+  library(broom)
+  library(geobr)
+  library(ggplot2)
+  library(sf)
+  library(ggpubr)
+# IMPORTACAO -----------------
+database <- readRDS("data1/dados_incompletude.rds")
+jsonfile <- c(fromJSON(file = "data1/data_values.json"))
+fields <- jsonfile$fields
+for (variavel in jsonfile$variaveis_tabela) {
+  database[[variavel]][database[[variavel]] == "Ignorado"] <-
+    "Dados ignorados"
+  database[[variavel]][database[[variavel]] == "na"] <-
+    "Dados em branco"
+  database[[variavel]][database[[variavel]] == "não"] <-
+    "Dados válidos"
+}
+
+database[['ID_MUNICIP']] <- database$muni_nm_clean %>%
+  purrr::map_chr(function(x) stringr::str_split(x, " -")[[1]][1])
+dados <- cbind(database[,str_detect(colnames(database),'^f_') == TRUE],database$muni_nm_clean,database$cod_mun)
+dados <- drop_na(dados)
+#AJUSTE DO BANCO DE DADOS PARA TRABALHAR COM PORCENTAGEM DE DADOS FALTANTES
+#substituindo os valores faltantes por 1
+
+colnames(dados)[36] <- 'Municipios'
+dados[dados == 'Dados válidos'] <- 0
+dados[dados == 'Dados em branco'] <- 1
+dados[dados == 'Dados ignorados']  <- 1
+
+for(i in 1:(ncol(dados)-2))dados[,i] <- dados[,i] %>%  as.numeric()
+
+Grupo_Muni <- aggregate(dados[,1:35],list(dados$`database$cod_mun`,dados$Municipios),FUN=sum)
+N_obs_muni <- dados %>% 
+  group_by(dados$`database$cod_mun`,dados$Municipios) %>% 
+  count()
+
+colnames(N_obs_muni) <- c('Group.1','Group.2','n')
+
+Grupo_Muni<- inner_join(Grupo_Muni,N_obs_muni[,c(1,3)],by='Group.1')
+Grupo_Muni[,c(3:37)]<-Grupo_Muni[,c(3:37)]/Grupo_Muni$n
+
+
+colnames(Grupo_Muni)[1] <- 'codigo_muni'
+colnames(Grupo_Muni)[2] <- 'municipios'
+```
+
+```{r PCA, echo=TRUE}
+PCA_municipios <- Grupo_Muni %>% 
+  select(-c(codigo_muni,municipios))  %>% princomp()
+#grupo_muni se refere ao conjunto de dados com cod de municipios, 
+#proporcao de dados incompletos e nome do municipio
+PCA_municipios %>%  plot()
+
+cumsum(PCA_municipios$sdev^2)/sum(PCA_municipios$sdev^2)
+Base_PCA <- PCA_municipios$scores[,1:2] %>% as.data.frame()
+Base_PCA$cod_muni <- Grupo_Muni$codigo_muni
+```
+
+Se observarmos o *Output* referente ao valor acumulativo da variância
+total explicada por cada um dos componentes, notamos que para o caso em
+particular de nossos dados, podemos muito bem reduzir a quase que uma
+única variável, por seu valor próximo de um. A título de visualização
+nos seguintes procedimentos para análise de agrupamentos, foi
+selecionado dois componentes principais.
+
+## K-médias
+
+A princípio nesse estudo incial foi aplicado apenas o método de
+agrupamento K-médias. Podendo ser definido como método de agrupamento
+baseado em centróides para cada um dos grupos, com objetivo de reduzir a
+soma total dos quadrados das distâncias entre cada um dos pontos e o
+centróide de seu respectívo grupo, ou seja:
+
+$$
+arg \quad min \sum_{i = 1}^k \sum_{x \in S_i}|| x - \mu_i|| ^2
+$$ Esse algorítimo se baseia em um número de grupos inseridos pelo
+usuário. Para definir o melhor número de grupos, iremos utilizar a
+Variância total. Será gerado para cada $k$ número de grupos um modelo,
+onde será armazenado em um vetor o equivalente a sua Variância, o número
+de grupos que obtiver a queda mais drástica desse valor comparado ao
+número de grupos anterior e menor queda referente ao número de grupos
+posterior será o escolhido. Será aplicada esta metodologia tanto para o
+banco sem alterações quanto para o conjunto com aplicação do $PCA$.
+
+```{r Cluster PCA, echo=TRUE}
+#PCA ---------
+set.seed(1221)
+vetor_twss <- NA
+for(i in 1:10){
+  vetor_twss[i] <- (Base_PCA[1:2] %>% kmeans(centers = i, iter.max = 400))$tot.withinss
+}
+#qplot(1:10, vetor_twss, geom = "line") #possivelmente 4 grupos
+Base_PCA <- kmeans(Base_PCA[1:2],centers = 5, iter.max = 400) %>% 
+  augment(Base_PCA)
+#par(mfrow = c(1,2))
+g1 <- Base_PCA %>% ggplot(aes(x =  Comp.1, y = Comp.2, color = .cluster)) +
+  geom_point()
+g2 <- qplot(1:10, vetor_twss, geom = "line") 
+ggarrange(g1 ,g2)
+```
+
+Note como foi feita a separação do conjunto de dados com PCA. Como
+citado anteriormente, foram selecionadas duas variáveis a título de
+visualização. Os grupos se encontram bem distribuidos com número de
+indivíduos diferentes para cada grupo, note tambem que o grupo 2
+apresenta apenas uma unidade amostral,
+
+```{r Outlier, echo=TRUE}
+codigo <- Base_PCA[Base_PCA$.cluster==2,3]
+Grupo_Muni[Grupo_Muni$codigo_muni == as.numeric(codigo),]
+```
+
+Sendo São Paulo esse Outlier, fato esperado considerando a discrepância
+em certos indicadores se comparado com outros municípios. Seguindo com
+os dados sem aplicação de PCA.
+
+```{r echo=TRUE}
+#Normal --------------
+
+vetor_twss <- NA
+for(i in 1:10){
+  vetor_twss[i] <- (Grupo_Muni[3:37] %>% kmeans(centers = i, iter.max = 600))$tot.withinss
+}
+qplot(1:10, vetor_twss, geom = "line") #possivelmente 4 grupos
+
+Grupo_Muni <- kmeans(Grupo_Muni[3:37],centers = 7, iter.max = 600) %>% 
+  augment(Grupo_Muni)
+```
+
+A visualização para o conjunto normal infelizmente não será possível da
+forma convêncional. Logo foi realizado a seguinte visualização usando o
+pacote geoBr().
+
+```{r Grafico Brasil, echo=TRUE}
+#SEM PCA
+colnames(Grupo_Muni)[1] <- 'code_muni' 
+Grupo_Muni$code_muni <- Grupo_Muni$code_muni %>% as.numeric()
+Grupo_Muni$code_muni <-Grupo_Muni$code_muni * 10
+municipios_geo <- read_municipality(year='2020')
+municipios_geo$code_muni <- municipios_geo$code_muni %>% as.numeric()
+Dados_Merge <- full_join(municipios_geo,Grupo_Muni,by ='code_muni')
+Dados_Merge$.cluster <-Dados_Merge$.cluster %>% as.numeric()
+g1 <- ggplot() +
+  geom_sf(data=Dados_Merge, aes(fill=.cluster), color= NA, size=.15) +
+  labs(title="clusters dados sem PCA", size=8) +
+  scale_fill_distiller(palette = 'Greens') + theme_minimal()
+
+#COM PCA
+colnames(Base_PCA)[3] <- 'code_muni' 
+Base_PCA$code_muni <- Base_PCA$code_muni %>% as.numeric()
+Base_PCA$code_muni <-Base_PCA$code_muni * 10
+Dados_Merge_pca <- full_join(municipios_geo,Base_PCA,by ='code_muni')
+Dados_Merge_pca$.cluster <-Dados_Merge_pca$.cluster %>% as.numeric()
+g2 <- ggplot() +
+  geom_sf(data=Dados_Merge_pca, aes(fill=.cluster), color= NA, size=.15) +
+  labs(title="clusters dados com PCA", size=8) +
+  scale_fill_distiller(palette = 'Greens') + theme_minimal()
+ggarrange(g1 ,g2)
+```
+É visivel que a análise utilizando o conjunto de dados PCA não nos forneceu resultados muito representativos, já o conjunto de dados normais um resultado um pouco superior.
+
+
+## Identificação de Outilier
+
+Como citado na introdução do trabalho iremos utilizar a diferença entre o valor obtido pelo PCA com o conjunto original. Alem de que podemos citar o método de agrupamentos realizado onde foi identificado um grupo com uma unidade amostral, podendo ser esse tambem um valor fora do padrão.
+```{r}
+PCA_aprox <- PCA_municipios$scores[,1] %*% t(PCA_municipios$loadings[1,]) + PCA_municipios$center
+erro_PCA <- sqrt(rowSums((Grupo_Muni[,c(3:37)]-PCA_aprox)^2))
+hist(erro_PCA)
+dados_erro <- Grupo_Muni %>% 
+  tibble::rownames_to_column() %>% 
+  as_tibble() %>% 
+  mutate(
+    erro_PCA = erro_PCA
+  ) 
+dados_erro[,c('municipios','erro_PCA')] %>% arrange(desc(erro_PCA)) %>% head()
+```
+Como esperado, o valor com maior diferença em relação ao dos outros é São Paulo capital, que apresenta índices relativamente diferente aos outros municípios.
+
+Podemos classificar nosso método utilizado no conjunto de dados originais como apropriado em virtude de dados de mesma região terem ficados armazenados em grupos próximos, como visto no gráfico realizado com o pacote GeoBr. Como já esperado, muito disso se deve aos indicadores da região e a qualidade de gestão pública, se levarmos em conta o material em estudo. 
+O principal objetivo deste trabalho é o alerta para com as entidades responsáveis para essa proporção de dados faltantes e qualidade dos conjuntos de dados públicos aqui trabalhados.
+
+
+
